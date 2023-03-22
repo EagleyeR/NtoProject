@@ -20,6 +20,7 @@ ALLOWED_HOSTS = ["alv.pp.ru", "localhost"]
 # Application definition
 
 INSTALLED_APPS = [
+    'corsheaders',
     'daphne',
     'channels',
     'lab',
@@ -34,6 +35,7 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -72,7 +74,7 @@ ASGI_APPLICATION = 'NtoProject.asgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': "NTOHouse",
+        'NAME': "NTOPproject2023",
         'USER': 'aml1',
         'PASSWORD': 'aml1',
         'HOST': 'alv.pp.ru',

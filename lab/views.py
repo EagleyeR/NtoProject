@@ -1,11 +1,16 @@
 import json
+
 from lab.mqtt import client as mqtt_client
 from django.http import JsonResponse
 from rest_framework.permissions import IsAuthenticated, IsAdminUser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from .models import *
+from channels.layers import get_channel_layer
+from asgiref.sync import async_to_sync
 import socket
+
+
 class ProfileView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -41,7 +46,21 @@ class UserView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        pass
+        from channels.layers import get_channel_layer
+        from asgiref.sync import async_to_sync
+
+        channel_layer = get_channel_layer()
+        print(channel_layer)
+
+        async_to_sync(channel_layer.group_send)(
+            "ws",
+            {
+                "type": "websocket.send",
+                "text": "Hello from outside WebsocketConsumer class!"
+            }
+        )
+        return Response(1)
+
 
     def post(self, request):
         pass

@@ -12,7 +12,6 @@ os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'yourproject.settings')
 
 from lab.consumers import Consumer
 
-
 django_asgi_app = get_asgi_application()
 
 application = ProtocolTypeRouter({
@@ -21,5 +20,7 @@ application = ProtocolTypeRouter({
         URLRouter([
             path('ws', Consumer.as_asgi())
         ])
-    )
+    ),
+    # 'mqtt': MyMqttConsumer.as_asgi(),
+
 })

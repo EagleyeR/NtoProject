@@ -5,26 +5,33 @@ from phonenumber_field.modelfields import PhoneNumberField
 
 class Lab(models.Model):
     people = models.ForeignKey(User, on_delete=models.CASCADE, name="Люди в лаборатории")
-    temperature = models.CharField(max_length=3, name="Температура")
-    humidity = models.CharField(max_length=5, name="Влажность")
-    heighWaterFirst = models.CharField(max_length=3, name="Объем в первой колбе")
-    heighWaterSecond = models.CharField(max_length=3, name="Объем во второй колбе")
-    lux = models.CharField(max_length=5, name="Яркость света")
-    co2 = models.CharField(max_length=5, name="Уровень углекислого газа")
-    emission_pr = models.CharField(max_length=5, name="Уровень других газов")
-    countWater = models.CharField(max_length=3, name='Сколько воды прошло')
-    pumpAlert = models.BooleanField(default=False, name="Переполнение, тревога")
-    otherGasAlert = models.BooleanField(default=False, name="Тревога всех газов")
-    co2Alert = models.BooleanField(default=False, name="Углекислый гах, тревога")
-    door = models.BooleanField(default=False, name="Дверь")
-    start_lab = models.BooleanField(default=False, name="Работает ли лаборатория")
-    went = models.BooleanField(default=False, name="Работает ли вентилятор")
-    window = models.BooleanField(default=False, name="Окно")
 
+    bar = models.IntegerField(default=0)  # Давление
+    temperature = models.IntegerField(default=0)  # Температура
+    humidity = models.IntegerField(default=0)  # Влажность
+    heighWaterFirst = models.IntegerField(default=0)  # Объем в первой колбе
+    heighWaterSecond = models.IntegerField(default=0)  # Объем во второй колбе
+    lux = models.IntegerField(default=0)  # Яркость света
+    co2 = models.IntegerField(default=0)  # Уровень углекислого газа
+    emission_pr = models.IntegerField(default=0)  # Уровень других газов
+    countWater = models.IntegerField(default=0)  # Сколько воды прошло
+    pumpAlert = models.BooleanField(default=False)  # Переполнение, тревога
+    otherGasAlert = models.BooleanField(default=False)  # Тревога всех газов
+    co2Alert = models.BooleanField(default=False)  # Углекислый гах, тревога
+    door = models.BooleanField(default=False)  # Дверь
+    start_lab = models.BooleanField(default=False)  # Работает ли лаборатория
+    went = models.BooleanField(default=False)  # Работает ли вентилятор
+    window = models.BooleanField(default=False)  # Окно
+    went_speed = models.BooleanField(default=False)  # Скорость вентилятора
+    gyroscope = models.IntegerField(default=0)  # Гироскоп
+    light_level = models.IntegerField(default=0)  # Освещенность в комнате
 
-    RGB = models.CharField(max_length=11, name="РГБ, значение жидкости")
-    color = models.CharField(max_length=6, name="Цвет жидкости")
+    # Цвета жидкости
+    all_color = [("Gold", "Yellow"), ("Green", "Green"), ("Blue", "Blue"), ("Black", "Black")]
+    light_request = models.CharField(max_length=6, choices=all_color, blank=True)  # Запрошенный цвет
 
+    RGB = models.CharField(max_length=11, blank=True)  # РГБ, значение жидкости
+    color = models.CharField(max_length=6, choices=all_color, blank=True)  # Цвет жидкости
 
     def __str__(self):
         return f"Лаборатория номер {str(self.pk)}"
