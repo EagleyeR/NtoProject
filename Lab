@@ -1,0 +1,610 @@
+#include <Wire.h>
+#include <Adafruit_APDS9960.h>
+#include <SPI.h>
+#include <BH1750.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BME280.h>
+#include "SparkFun_SGP30_Arduino_Library.h"
+#include <VL53L0X.h>
+#include "mcp3021.h"
+#include <PubSubClient.h>
+#include <WiFi.h>
+#include <ArduinoJson.h>
+#include "AsyncUDP.h"
+#include "ESPmDNS.h"
+#include <GyverPortal.h>
+#include <Adafruit_NeoPixel.h>
+#include "PCA9536.h"
+#include <Adafruit_I2CDevice.h>
+#include <I2C_graphical_LCD_display.h>
+#include <ESP32_Servo.h>
+
+
+#define NBOARDS 17
+#define HW_RESET_PIN 0
+#define LED_PIN 5 // toDo
+#define PWMB 17
+
+
+Adafruit_APDS9960 apds9960; // инициализация датчика цвета
+BH1750 lightMeter; // инициализация датчика света
+Adafruit_BME280 bme280; //датчик температуры, давления
+SGP30 mySensor; // датчик летучих газов
+VL53L0X lox; // датчик расстояния
+MCP3021 mcp3021;
+GyverPortal portal;
+I2C_graphical_LCD_display lcd; // дисплей
+Servo myservo;
+Servo myservo1;
+
+boolean color = false;
+boolean p_s = false;
+boolean w_s = false;
+const uint8_t  pinSensor = 19;
+      uint32_t varPulse;                                      
+      uint8_t  varResult;
+float count_water = 0.0;
+int ctitical_CO2 = 600; 
+int critical_TVOC = 150;
+float dist = 0;
+float h = 0;
+int param_from_serv = 0;
+int to_go = 1;
+int pump_alert = 0;
+float lux = 0.0;
+boolean emissions_alert_co2 = false;
+boolean emissions_alert_pr = false;
+int stop_process = 0;
+int window_state = 0;
+int duration = 0; // переменная для считывания
+boolean auto_brigtness = 0;
+String request_color = "0";
+int flag = 0;
+const int sensorln = 15;
+float voltage = 17.0;
+const float mVperAmp = 185;
+float Amps = 0.0;
+float P = 0.0;
+boolean stlab = false;
+boolean stpum = false;
+float spee = 0.0;
+float delta_acs = 0.0;
+
+const float air_value = 565.0;
+const float water_value = 308.0;
+const float moisture_0 = 0.0;
+const float moisture_100 = 100.0;
+const unsigned int NUM = 3;
+
+char ssid[30] = "TP-Link_4F90";
+char password[30] = "00608268";
+const char* mqtt_server = "37.46.131.176";
+char message_buff[400];
+String ans = "0";
+unsigned long timer1 = 0;
+
+WiFiClient espClient;
+PubSubClient client(espClient);
+
+char topic[30] = "test/topic";
+char topic_sub[30] = "test/sub";
+char message[30] = "";
+
+float CO2_level = 0.0;
+float emissions_level_pr = 0.0;
+float dist_to_serv = 0.0;
+float t = 0.0;
+float mu = 0.0;
+float p = 0.0;
+float count_water_end = 0.0;
+int r = 0;
+int g = 0;
+int b = 0;
+int door_state = 0;
+int light_state = 0;
+int lab_works = 0;
+unsigned long timer = 0;
+ 
+struct multidata {
+  uint8_t num;
+  IPAddress boardIP;
+  String nameTeam;
+  bool dina_Base;
+  bool dina_TS;
+  bool dina_St;
+  bool dina_R;
+  bool alertTeam;
+  GPcolor color_Res;
+  byte vol_s_colb;
+  byte vol_en_colb;
+};
+
+multidata data[NBOARDS]{ 0 };
+const uint16_t PORT_package = 8888;
+AsyncUDP udp;
+PCA9536 pca9536;
+const char* master_host = "esp32master";
+// приставка имени ведомой платы
+const char* slave_host = "esp32slave";
+
+void parsePacket(AsyncUDPPacket packet) {
+  const multidata* tmp = (multidata*)packet.data();
+
+  // Вычисляем размер данных
+  const size_t len = packet.length() / sizeof(data[0]);
+  // Если адрес данных не равен нулю и размер данных больше нуля...
+  if (tmp != nullptr && len > 0) {
+
+    // Проходим по элементам массива
+    for (size_t i = 0; i < len; i++) {
+
+      // Если это не ESP на которой выполняется этот скетч
+      if (i == NUM) {
+        // Обновляем данные массива структур
+        data[i].num = tmp[i].num;
+        data[i].boardIP = tmp[i].boardIP;
+        // Записываем данные станции
+        data[i].nameTeam = tmp[i].nameTeam;
+        data[i].dina_Base = tmp[i].dina_Base;
+        data[i].dina_TS = tmp[i].dina_TS;
+        data[i].dina_St = tmp[i].dina_St;
+        data[i].dina_R = tmp[i].dina_R;
+        data[i].alertTeam = tmp[i].alertTeam;
+        data[i].color_Res = tmp[i].color_Res;
+        data[i].vol_s_colb = tmp[i].vol_s_colb;
+        data[i].vol_en_colb = tmp[i].vol_en_colb;
+      }
+    }
+  }
+  //toDo!!
+  if(data[NUM].dina_St){
+    param_from_serv = 1;
+    data[NUM].dina_Base = 0;
+    color = true;
+    stlab = true;
+  }
+}
+
+void callback(char* topic_sub, byte* payload, unsigned int length)
+{
+  String jsonString = "";
+
+  for (int i=0;i<length;i++) {
+    jsonString += (char)payload[i];
+  }
+
+  Serial.println("Message arrived [" + String(topic) + "] " + jsonString);
+ 
+  StaticJsonDocument<200> doc;
+
+  DeserializationError error = deserializeJson(doc, jsonString);
+
+  if (error) {
+    Serial.println("deserializeJson() failed: " + String(error.c_str()));
+    return;
+  }
+  int zero = doc["auto_light"];
+  int zero_zero = doc["pomp_works"];
+  int first = doc["door"];
+  int second = doc["start_lab"];
+  int third = doc["went"];
+  int fourth = doc["lux"];
+  int fifth = doc["window"];
+  
+  Serial.println(first);                                         // Finally, converting our payload to a string so we can compare it. 
+  Serial.println(second);
+  Serial.println(third);
+  Serial.println(fourth);
+  door_state = first;
+  if(zero_zero){
+    p_s = zero_zero;
+  }
+  if(second){
+    lab_works = second;
+  }
+  w_s = third;
+  light_state = fourth;
+  if(p_s){
+    color = true;
+    stpum = true;
+  }
+  window_state = fifth;
+  if(lab_works){
+    flag = 1;
+  }
+  auto_brigtness = zero;
+}
+
+void display_write(String text_data){
+  lcd.clear();
+  lcd.gotoxy (10, 50); // координата курсора
+  lcd.string (text_data.c_str()); 
+}
+
+void display_write1(float Temp, float Bar, float Hu, bool door, bool window, bool server){
+  
+  lcd.clear();
+
+  if(server){
+    lcd.gotoxy (75, 6); // координата курсора
+    lcd.string("Connected"); 
+    }
+  lcd.gotoxy (0, 10); // координата курсора
+  lcd.string("Te:   ");
+  lcd.gotoxy (18, 10); // координата курсора
+  lcd.print(Temp); 
+  
+  lcd.gotoxy (0, 20); // координата курсора
+  lcd.string("Ba:   ");
+  lcd.gotoxy (18, 20); // координата курсора
+  lcd.print (Bar);
+
+  lcd.gotoxy (0, 30); // координата курсора
+  lcd.string ("Hu:   "); 
+  lcd.gotoxy (18, 30); // координата курсора
+  lcd.print (Hu);  
+
+  if (door){
+    lcd.gotoxy (0, 40); // координата курсора
+    lcd.string ("Door open");
+  }else{
+    lcd.gotoxy (0, 40); // координата курсора
+    lcd.string ("Door close");
+    }
+
+  if (window){
+    lcd.gotoxy (0, 50); // координата курсора
+    lcd.string ("Window open");
+  }else{
+    lcd.gotoxy (0, 50); // координата курсора
+    lcd.string ("Window close");
+    }
+  }
+
+void setup() {
+  data[NUM].num = NUM;
+  Wire.begin();
+  Serial.begin(115200);
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(1000);
+    Serial.println('c'); //"Connecting to WiFi..."
+  }
+  Serial.println("wifi ready"); //connected to WiFi
+  data[NUM].boardIP = WiFi.localIP();
+  // Connect to MQTT broker
+  client.setServer(mqtt_server, 1883);
+  client.setBufferSize(2000);
+  client.setCallback(callback);
+  while (!client.connected()) {
+    Serial.println(3); //"Connecting to MQTT broker..."
+    if (client.connect("ESP32Client")) {
+      Serial.println(2); //"Connected to MQTT broker"
+    } else {
+      Serial.print(4);//"Failed to connect to MQTT broker, rc="
+      Serial.print(client.state());
+      Serial.println(5);//" retrying in 5 seconds"
+      delay(5000);
+    }
+  }
+  Serial.println("mqtt ready");
+  if (!MDNS.begin(String(slave_host + NUM).c_str())) {
+    Serial.println("не получилось инициировать mDNS");
+  }
+
+  // Узнаём IP адрес платы с UDP сервером
+  IPAddress server = MDNS.queryHost(master_host);
+
+  // Если удалось подключиться по UDP
+  if (udp.connect(server, PORT_package)) {
+
+    Serial.println("UDP подключён");
+
+    // вызываем callback функцию при получении пакета
+    udp.onPacket(parsePacket);
+  }
+  Serial.println(1);
+  if (!apds9960.begin()) {
+    Serial.println("Failed to initialize color_module!");
+  }
+  Serial.println(2);
+  apds9960.enableColor(true);
+  lightMeter.begin();
+  bool bme_status = bme280.begin();
+  Serial.println(3);
+  if (!bme_status){
+    Serial.println("Could not find a valid BME280 sensor, check wiring!");
+  }
+   if (mySensor.begin() == false) {
+    Serial.println("No SGP30 Detected. Check connections.");
+  }
+  Serial.println(4);
+  mySensor.initAirQuality();
+  Serial.println(1);
+  lox.init();
+  Serial.println(5);
+  lox.setTimeout(500);
+  lox.setMeasurementTimingBudget(200000);
+  mcp3021.begin();
+  Serial.println(6);
+  client.subscribe(topic_sub);
+  pca9536.reset();
+  Serial.println(7);
+  pca9536.setMode(IO_OUTPUT);
+  //pca9536.setState(IO1, IO_LOW);
+  Serial.println(8);
+  //pca9536.setState(IO0, IO_LOW);
+  ledcAttachPin(PWMB, 2);
+  ledcSetup(2, 100, 10);
+  pca9536.setState(IO0, IO_HIGH);
+  pca9536.setState(IO1, IO_HIGH);
+  pinMode(pinSensor, INPUT);
+  lcd.begin();
+  display_write("Connected & Started");
+  pinMode(23, OUTPUT);
+  pinMode(5, OUTPUT);
+  pinMode(14, INPUT);
+  pinMode(13, INPUT);
+ }
+
+void adition(){
+  auto val = digitalRead(14);
+  if(door_state==1 && !val){
+    myservo.attach(23);
+    myservo.write(80);
+    door_state = 1;
+  }
+  if(door_state==0 && val){
+    myservo.attach(23);
+    myservo.write(180);
+    door_state = 0;
+  }
+}
+
+void adition1(){
+  auto val = digitalRead(13);
+  if(window_state==1 && !val){
+    myservo1.attach(5);
+    myservo1.write(0);
+    window_state = 1;
+  }
+  if(window_state==0 && val){
+    myservo1.attach(5);
+    myservo1.write(90);
+    window_state = 0;
+  }
+}
+
+void color_definition(){
+  if(color){
+    Serial.println("Color function");
+    uint16_t red_data   = 0;
+    uint16_t green_data = 0;
+    uint16_t blue_data  = 0;
+    uint16_t clear_data = 0;
+    if (apds9960.colorDataReady()){
+      apds9960.getColorData(&red_data, &green_data, &blue_data, &clear_data);
+      r = red_data;
+      b = blue_data;
+      g = green_data;
+      if(b >= 15 && r < 15){
+        ans = "Blue";
+      }
+      if(r < 10 && g < 10 && b < 10){
+        ans = "Black";
+      }
+      if(r > 10 && g > 10 && b > 10 && r < 20 && g < 20 && b < 20){
+        ans = "Yellow";
+      }
+      if(g > 30){
+        ans = "Green";
+      }
+      Serial.println(ans);
+      color = false;
+    }
+  }
+  GPcolor prom;
+  if(ans == "Black"){prom = GPcolor(GP_BLACK);}
+  else if(ans == "Yellow"){prom = GPcolor(GP_YELLOW_B);}
+  else if(ans == "Green"){prom = GPcolor(GP_GREEN_B);}
+  else if(ans == "Blue"){prom = GPcolor(GP_BLUE_B);}
+  if(prom.encode() != data[NUM].color_Res.encode()){stop_process = 1; data[NUM].color_Res = prom;}
+  else{stop_process = 1; 
+  data[NUM].color_Res = prom;
+  }
+}
+
+void pump_on(){
+  if(p_s && (h < 91.0 || h > 200.0)){
+     Serial.println("detected pump");
+     pca9536.setState(IO0, IO_HIGH);
+     varPulse=pulseIn(pinSensor, HIGH, 200000); 
+     float varT = 2.0 * (float)varPulse / 1000000;
+     float varF = 1 / varT;
+     float varQ = varF / 450.0f;
+     count_water += varQ * varT * 2083;
+     spee = varQ;
+     Serial.println("________________________");
+     Serial.println(count_water * 5);
+     color = false;
+  }
+  else{
+    pca9536.setState(IO0, IO_LOW);
+    pump_alert = 1;
+    count_water_end = count_water * 5;
+    count_water = 0.0; 
+    color = false;
+    p_s = false;
+    stpum = false;
+  }
+}
+
+void wind_on(){
+  if(w_s){
+    pca9536.setState(IO1, IO_HIGH);
+  }
+  else{
+    pca9536.setState(IO1, IO_LOW);
+  }
+}
+
+
+void getChaindata(){
+  int mV = analogRead(sensorln) * (3300.0 / 4096.0);
+  Amps = (mV - 2500) / mVperAmp;
+  P = Amps * voltage;
+}
+
+void light_level(){
+  lux = lightMeter.readLightLevel(); // считывание освещенности
+  int value = (255 / 200) * lux;
+  if(auto_brigtness){
+    ledcWrite(2, (255/200) * light_state);
+    
+  }
+  else{
+    ledcWrite(2, (255 - value));
+  }  
+}
+
+void standart_indicators(){
+  t = bme280.readTemperature();
+  mu = bme280.readHumidity();
+  p = bme280.readPressure() / 100.0F;
+
+}
+
+
+
+void emissions_level(){
+  mySensor.measureAirQuality();
+  emissions_level_pr = mySensor.TVOC;
+  CO2_level = mySensor.CO2;
+  if (CO2_level > ctitical_CO2) {
+    w_s = true;
+    wind_on();
+    emissions_alert_co2 = true;
+  }
+  if (emissions_level_pr > critical_TVOC) {
+    w_s = true;
+    wind_on();
+    emissions_alert_pr = true;
+  }
+  else{
+    emissions_alert_pr = false;
+    emissions_alert_co2 = false;
+    
+  }
+  
+}
+
+void get_distance(){
+  if(param_from_serv){dist_to_serv = lox.readRangeSingleMillimeters();
+  //toDo calculus
+  param_from_serv = 0;}
+  else{dist = lox.readRangeSingleMillimeters();}
+ }
+
+void get_water_level(){
+  float adc0 = mcp3021.readADC();
+  h = map(adc0, air_value, water_value, moisture_0, moisture_100);
+  if(h > 91.0){pump_alert = 0;}
+  Serial.println(h);
+  //todo calculus
+}
+
+void package(){
+    if(stop_process){
+        if(lab_works && (h < 91.0 || h > 200.0)){
+        Serial.println("Here1");
+        get_distance();
+        pca9536.setState(IO0, IO_HIGH);
+        Serial.println("work");
+        varPulse=pulseIn(pinSensor, HIGH, 200000); 
+        float varT = 2.0 * (float)varPulse / 1000000;
+        float varF = 1 / varT;
+        float varQ = varF / 450.0f;
+        count_water += varQ * varT * 2083;
+        spee = varQ;
+        Serial.println("________________________");
+        Serial.println(count_water * 5);
+        color = false;
+        
+    }
+      else{
+        pca9536.setState(IO0, IO_LOW);
+        pump_alert = 1;
+        count_water_end = count_water * 5;
+        count_water = 0.0;
+        lab_works = 0;
+        flag = 0;
+      //toDo send package
+        data[NUM].vol_s_colb = (dist_to_serv * 125) / 142;
+        data[NUM].vol_en_colb = (h * 125) / 100;
+        data[NUM].dina_TS = true;
+        data[NUM].alertTeam = 1;
+        stop_process = 0;
+        Serial.println("Done");
+        stlab = false;
+      }
+   }
+    else{
+      data[NUM].dina_R = true;
+      stlab = false;
+   }
+ }
+
+void loop(){
+  client.loop();
+  get_distance();
+  get_water_level();
+  standart_indicators();
+  emissions_level();
+  color_definition();
+  pump_on();
+  display_write((String) Amps + " " + (String) t);
+  wind_on();
+  getChaindata();
+  if(flag){package();}
+  light_level();
+  adition();
+  adition1();
+  if(millis() - timer >= 3000){
+    timer = millis();
+    myservo.detach();
+    myservo1.detach();
+  }
+  if(millis() - timer1 >= 200){
+    display_write1(t, p, mu, door_state, window_state, true);
+    StaticJsonDocument<2000> doc;
+    doc["temperature"] = t;
+    doc["bar"] = p;
+    doc["humidity"] = mu;
+    doc["heighWaterSecond"] = (h * 125) / 220;
+    doc["heighWaterFirst"] = (dist * 125) / 142;
+    doc["co2Alert"] = emissions_alert_co2;
+    doc["otherGasAlert"] = emissions_alert_pr;
+    doc["light_level"] = lux;
+    doc["countWater"] = count_water_end * 2 - 30;
+    doc["pumpAlert"] = pump_alert;
+    doc["co2"] = 410;
+    doc["emission_pr"] = emissions_level_pr;
+    doc["color"] = ans;
+    doc["RGB"] = String(r) + "." + String(g) + "." + String(b);
+    doc["went_speed"] = 256;
+    doc["light_request"] = ans;
+    doc["power"] = P;
+    doc["amperage"] = abs(Amps);
+    doc["finish_lab"] = stlab;
+    doc["finish_top"] = stpum;
+    doc["water_speed"] = spee;
+    doc["gyroscope"] = delta_acs;
+    doc["door"] = door_state;
+    doc["window"] = window_state;
+    String output;
+    serializeJson(doc, output);
+    client.publish("test/topic", output.c_str());
+    Serial.println("published");
+    udp.broadcastTo((uint8_t*)&data[NUM], sizeof(data[NUM]), PORT_package);
+  }
+}
