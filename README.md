@@ -1,29 +1,14 @@
-# smart_city_2023
+# НТО 2023
 
-This template should help get you started developing with Vue 3 in Vite.
+Проект команды орлиный Глаз 2023 года
 
-## Recommended IDE Setup
+## Включает в себя
+скетч анализа показаний датчиков лаборатории
+веб-сервер
+скетч автоматического управления машинки
 
-[VSCode](https://code.visualstudio.com/) + [Volar](https://marketplace.visualstudio.com/items?itemName=Vue.volar) (and disable Vetur) + [TypeScript Vue Plugin (Volar)](https://marketplace.visualstudio.com/items?itemName=Vue.vscode-typescript-vue-plugin).
+## Реализован на:
 
-## Customize configuration
-
-See [Vite Configuration Reference](https://vitejs.dev/config/).
-
-## Project Setup
-
-```sh
-npm install
-```
-
-### Compile and Hot-Reload for Development
-
-```sh
-npm run dev
-```
-
-### Compile and Minify for Production
-
-```sh
-npm run build
-```
+Йотик 32
+Python/Django
+JavaScript, HTML, CSS/ Vue 3 + Vite / Bootstrap v5.4
