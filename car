@@ -1,0 +1,1032 @@
+#include <Arduino.h>
+#include <Wire.h>
+#include <Adafruit_PWMServoDriver.h>
+#include <MPU6050.h>
+#include "Adafruit_APDS9960.h"
+// Подключаем библиотеки
+#include "WiFi.h"
+#include "AsyncUDP.h"
+#include "ESPmDNS.h"
+
+#include <GyverPortal.h>
+GyverPortal portal;
+
+#define sensor_addr           0x3F // Переключатели адреса в положении "OFF"
+#define MAX_CHANNEL           0x08
+#define I2C_HUB_ADDR          0x70
+#define EN_MASK               0x08
+// #define SPEED                 20
+// #define STEP                  3
+#define COLOR_ADDR            0x39 // ПРОСКАНИРОВАТЬ В I2C
+
+#define ORANGE_R              28
+#define WHITE_R               40
+#define WHITE_B               30
+#define NBOARDS 17
+
+struct rgb{int r, g, b;};
+struct multidata {
+  /* Номер платы (необходим для быстрого доступа по индексу
+    в массиве структур) */
+  uint8_t num;
+  /* В структуру можно добавлять элементы
+    например, ip-адрес текущей платы:*/
+  IPAddress boardIP;
+
+  String nameTeam;
+  bool dina_Base;
+  bool dina_TS;
+  bool dina_St;
+  bool dina_R;
+  bool alertTeam;
+  GPcolor color_Res;
+  byte vol_s_colb;
+  byte vol_en_colb;
+};
+rgb RGB;
+int previous_millis = 0;
+
+boolean needToStop = false;
+boolean isRed = false;
+boolean isOrange = false;
+boolean inLab = false;
+boolean onLine = false;
+const unsigned int NUM = 11;
+int first = 0;
+int second = 0;
+
+boolean hasTurnedOut = false;
+boolean wasOnLine = false;
+int previousSilentLine = 1;
+boolean hasTurnedIn = false;
+boolean isOnLineAgain = false;
+boolean outOfGarage = false;
+boolean isRedFirstTime = true;
+
+static volatile int p00 = 0;
+static volatile int p01 = 0;
+static volatile int p02 = 0;
+static volatile int p03 = 0;
+static volatile int p04 = 0;
+static volatile int p05 = 0;
+static volatile int p06 = 0;
+static volatile int p07 = 0;
+static volatile int p08 = 0;
+static volatile int p09 = 0;
+static volatile int p10 = 0;
+static volatile int p11 = 0;
+static volatile int p12 = 0;
+static volatile int p13 = 0;
+static volatile int p14 = 0;
+static volatile int p15 = 0;
+static volatile int p16 = 0;
+static volatile int p17 = 0;
+static volatile int p18 = 0;
+ 
+MPU6050 mpu;
+Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver(0x70); // адрес зависит от перемычек на плате (также попробуйте просканировать адрес: https://github.com/MAKblC/Codes/tree/master/I2C%20scanner)
+Adafruit_APDS9960 apds9960;  // цвет
+
+/*
+  I2C порт 0x07 - выводы GP16 (SDA), GP17 (SCL)
+  I2C порт 0x06 - выводы GP4 (SDA), GP13 (SCL)
+  I2C порт 0x05 - выводы GP14 (SDA), GP15 (SCL)
+  I2C порт 0x04 - выводы GP5 (SDA), GP23 (SCL)
+  I2C порт 0x03 - выводы GP18 (SDA), GP19 (SCL)
+*/
+
+// Массив структур для обмена
+multidata data[NBOARDS]{ 0 };
+
+/* Определяем имена для mDNS */
+// для ведущей платы
+const char* master_host = "esp32master";
+// приставка имени ведомой платы
+const char* slave_host = "esp32slave";
+
+const char* SSID = "TP-Link_4F90";
+const char* PASSWORD = "00608268";
+// Определяем порт
+const uint16_t PORT = 8888;
+
+// Создаём объект UDP соединения
+AsyncUDP udp;
+
+void parsePacket(AsyncUDPPacket packet) {
+  const multidata* tmp = (multidata*)packet.data();
+
+  // Вычисляем размер данных
+  const size_t len = packet.length() / sizeof(data[0]);
+
+  // Если адрес данных не равен нулю и размер данных больше нуля...
+  if (tmp != nullptr && len > 0) {
+
+    // Проходим по элементам массива
+    for (size_t i = 0; i < len; i++) {
+
+      // Если это не ESP на которой выполняется этот скетч
+      if (i == NUM) {
+        // Обновляем данные массива структур
+        data[i].num = tmp[i].num;
+        data[i].boardIP = tmp[i].boardIP;
+        // Записываем данные станции
+        data[i].nameTeam = tmp[i].nameTeam;
+        data[i].dina_Base = tmp[i].dina_Base;
+        data[i].dina_TS = tmp[i].dina_TS;
+        data[i].dina_St = tmp[i].dina_St;
+        data[i].dina_R = tmp[i].dina_R;
+        data[i].alertTeam = tmp[i].alertTeam;
+        data[i].color_Res = tmp[i].color_Res;
+        data[i].vol_s_colb = tmp[i].vol_s_colb;
+        data[i].vol_en_colb = tmp[i].vol_en_colb;
+      }else{
+        //эти данные должна отправлять динамика
+        data[i].dina_St = tmp[i].dina_St;
+        data[i].dina_Base = tmp[9].dina_Base;
+        data[i].dina_TS = tmp[9].dina_TS;
+      }
+    }
+  }
+  if(data[3].dina_St == false){
+    first = 1;  
+  }
+  else if(data[3].dina_St == true || data[3].dina_R == true){
+    second = 1;
+    data[NUM].dina_Base = false;    
+    
+  }  
+}
+ 
+void init_sensor() {
+  Wire.beginTransmission(sensor_addr);
+  Wire.write(0x10);       // Регистр настройки всей микросхемы
+  Wire.write(0b00000000); // Нормальный режим работы
+  Wire.write(0b01001111); // АЦП в непрерывном режиме, 200 ksps, встроенный ИОН для ЦАП
+  Wire.endTransmission();
+  delay(1000);
+  Wire.beginTransmission(sensor_addr);
+  Wire.write(0x20);       // Регистр настройки порта 0 (подключен к оптическому сенсору)
+  Wire.write(0b00000000); // Сброс конфигурации порта
+  Wire.write(0b00000000);
+  Wire.endTransmission();
+  Wire.beginTransmission(sensor_addr);
+  Wire.write(0x21);       // Регистр настройки порта 1 (подключен к оптическому сенсору)
+  Wire.write(0b00000000); // Сброс конфигурации порта
+  Wire.write(0b00000000);
+  Wire.endTransmission();
+  Wire.beginTransmission(sensor_addr);
+  Wire.write(0x22);       // Регистр настройки порта 2 (подключен к оптическому сенсору)
+  Wire.write(0b00000000); // Сброс конфигурации порта
+  Wire.write(0b00000000);
+  Wire.endTransmission();
+  Wire.beginTransmission(sensor_addr);
+  Wire.write(0x23);       // Регистр настройки порта 3 (подключен к оптическому сенсору)
+  Wire.write(0b00000000); // Сброс конфигурации порта
+  Wire.write(0b00000000);
+  Wire.endTransmission();
+  Wire.beginTransmission(sensor_addr);
+  Wire.write(0x24);       // Регистр настройки порта 4 (подключен к оптическому сенсору)
+  Wire.write(0b00000000); // Сброс конфигурации порта
+  Wire.write(0b00000000);
+  Wire.endTransmission();
+  Wire.beginTransmission(sensor_addr);
+  Wire.write(0x25);       // Регистр настройки порта 5 (подключен к оптическому сенсору)
+  Wire.write(0b00000000); // Сброс конфигурации порта
+  Wire.write(0b00000000);
+  Wire.endTransmission();
+  Wire.beginTransmission(sensor_addr);
+  Wire.write(0x26);       // Регистр настройки порта 6 (подключен к оптическому сенсору)
+  Wire.write(0b00000000); // Сброс конфигурации порта
+  Wire.write(0b00000000);
+  Wire.endTransmission();
+  Wire.beginTransmission(sensor_addr);
+  Wire.write(0x27);       // Регистр настройки порта 7 (подключен к оптическому сенсору)
+  Wire.write(0b00000000); // Сброс конфигурации порта
+  Wire.write(0b00000000);
+  Wire.endTransmission();
+  Wire.beginTransmission(sensor_addr);
+  Wire.write(0x28);       // Регистр настройки порта 8 (подключен к оптическому сенсору)
+  Wire.write(0b00000000); // Сброс конфигурации порта
+  Wire.write(0b00000000);
+  Wire.endTransmission();
+  Wire.beginTransmission(sensor_addr);
+  Wire.write(0x29);       // Регистр настройки порта 9 (подключен к оптическому сенсору)
+  Wire.write(0b00000000); // Сброс конфигурации порта
+  Wire.write(0b00000000);
+  Wire.endTransmission();
+  Wire.beginTransmission(sensor_addr);
+  Wire.write(0x2A);       // Регистр настройки порта 10 (подключен к оптическому сенсору)
+  Wire.write(0b00000000); // Сброс конфигурации порта
+  Wire.write(0b00000000);
+  Wire.endTransmission();
+  Wire.beginTransmission(sensor_addr);
+  Wire.write(0x2B);       // Регистр настройки порта 11 (подключен к оптическому сенсору)
+  Wire.write(0b00000000); // Сброс конфигурации порта
+  Wire.write(0b00000000);
+  Wire.endTransmission();
+  Wire.beginTransmission(sensor_addr);
+  Wire.write(0x2C);       // Регистр настройки порта 12 (подключен к оптическому сенсору)
+  Wire.write(0b00000000); // Сброс конфигурации порта
+  Wire.write(0b00000000);
+  Wire.endTransmission();
+  Wire.beginTransmission(sensor_addr);
+  Wire.write(0x2D);       // Регистр настройки порта 13 (подключен к оптическому сенсору)
+  Wire.write(0b00000000); // Сброс конфигурации порта
+  Wire.write(0b00000000);
+  Wire.endTransmission();
+  Wire.beginTransmission(sensor_addr);
+  Wire.write(0x2E);       // Регистр настройки порта 14 (подключен к оптическому сенсору)
+  Wire.write(0b00000000); // Сброс конфигурации порта
+  Wire.write(0b00000000);
+  Wire.endTransmission();
+  Wire.beginTransmission(sensor_addr);
+  Wire.write(0x2F);       // Регистр настройки порта 15 (подключен к оптическому сенсору)
+  Wire.write(0b00000000); // Сброс конфигурации порта
+  Wire.write(0b00000000);
+  Wire.endTransmission();
+  Wire.beginTransmission(sensor_addr);
+  Wire.write(0x30);       // Регистр настройки порта 16 (подключен к оптическому сенсору)
+  Wire.write(0b00000000); // Сброс конфигурации порта
+  Wire.write(0b00000000);
+  Wire.endTransmission();
+  Wire.beginTransmission(sensor_addr);
+  Wire.write(0x31);       // Регистр настройки порта 17 (подключен к оптическому сенсору)
+  Wire.write(0b00000000); // Сброс конфигурации порта
+  Wire.write(0b00000000);
+  Wire.endTransmission();
+  Wire.beginTransmission(sensor_addr);
+  Wire.write(0x32);       // Регистр настройки порта 18 (подключен к оптическому сенсору)
+  Wire.write(0b00000000); // Сброс конфигурации порта
+  Wire.write(0b00000000);
+  Wire.endTransmission();
+  delay(1000);
+  Wire.beginTransmission(sensor_addr);
+  Wire.write(0x20);       // Регистр настройки порта 0 (подключен к оптическому сенсору)
+  Wire.write(0b01110001); // Диапазон входного напряжения 0 ... 10 В, встроенный ИОН, порт в режиме входа АЦП
+  Wire.write(0b11100000); // Порт не ассоциирован с другим портом, количество выборок АЦП - 128
+  Wire.endTransmission();
+  Wire.beginTransmission(sensor_addr);
+  Wire.write(0x21);       // Регистр настройки порта 1 (подключен к оптическому сенсору)
+  Wire.write(0b01110001); // Диапазон входного напряжения 0 ... 10 В, встроенный ИОН, порт в режиме входа АЦП
+  Wire.write(0b11100000); // Порт не ассоциирован с другим портом, количество выборок АЦП - 128
+  Wire.endTransmission();
+  Wire.beginTransmission(sensor_addr);
+  Wire.write(0x22);       // Регистр настройки порта 2 (подключен к оптическому сенсору)
+  Wire.write(0b01110001); // Диапазон входного напряжения 0 ... 10 В, встроенный ИОН, порт в режиме входа АЦП
+  Wire.write(0b11100000); // Порт не ассоциирован с другим портом, количество выборок АЦП - 128
+  Wire.endTransmission();
+  Wire.beginTransmission(sensor_addr);
+  Wire.write(0x23);       // Регистр настройки порта 3 (подключен к оптическому сенсору)
+  Wire.write(0b01110001); // Диапазон входного напряжения 0 ... 10 В, встроенный ИОН, порт в режиме входа АЦП
+  Wire.write(0b11100000); // Порт не ассоциирован с другим портом, количество выборок АЦП - 128
+  Wire.endTransmission();
+  Wire.beginTransmission(sensor_addr);
+  Wire.write(0x24);       // Регистр настройки порта 4 (подключен к оптическому сенсору)
+  Wire.write(0b01110001); // Диапазон входного напряжения 0 ... 10 В, встроенный ИОН, порт в режиме входа АЦП
+  Wire.write(0b11100000); // Порт не ассоциирован с другим портом, количество выборок АЦП - 128
+  Wire.endTransmission();
+  Wire.beginTransmission(sensor_addr);
+  Wire.write(0x25);       // Регистр настройки порта 5 (подключен к оптическому сенсору)
+  Wire.write(0b01110001); // Диапазон входного напряжения 0 ... 10 В, встроенный ИОН, порт в режиме входа АЦП
+  Wire.write(0b11100000); // Порт не ассоциирован с другим портом, количество выборок АЦП - 128
+  Wire.endTransmission();
+  Wire.beginTransmission(sensor_addr);
+  Wire.write(0x26);       // Регистр настройки порта 6 (подключен к оптическому сенсору)
+  Wire.write(0b01110001); // Диапазон входного напряжения 0 ... 10 В, встроенный ИОН, порт в режиме входа АЦП
+  Wire.write(0b11100000); // Порт не ассоциирован с другим портом, количество выборок АЦП - 128
+  Wire.endTransmission();
+  Wire.beginTransmission(sensor_addr);
+  Wire.write(0x27);       // Регистр настройки порта 7 (подключен к оптическому сенсору)
+  Wire.write(0b01110001); // Диапазон входного напряжения 0 ... 10 В, встроенный ИОН, порт в режиме входа АЦП
+  Wire.write(0b11100000); // Порт не ассоциирован с другим портом, количество выборок АЦП - 128
+  Wire.endTransmission();
+  Wire.beginTransmission(sensor_addr);
+  Wire.write(0x28);       // Регистр настройки порта 8 (подключен к оптическому сенсору)
+  Wire.write(0b01110001); // Диапазон входного напряжения 0 ... 10 В, встроенный ИОН, порт в режиме входа АЦП
+  Wire.write(0b11100000); // Порт не ассоциирован с другим портом, количество выборок АЦП - 128
+  Wire.endTransmission();
+  Wire.beginTransmission(sensor_addr);
+  Wire.write(0x29);       // Регистр настройки порта 9 (подключен к оптическому сенсору)
+  Wire.write(0b01110001); // Диапазон входного напряжения 0 ... 10 В, встроенный ИОН, порт в режиме входа АЦП
+  Wire.write(0b11100000); // Порт не ассоциирован с другим портом, количество выборок АЦП - 128
+  Wire.endTransmission();
+  Wire.beginTransmission(sensor_addr);
+  Wire.write(0x2A);       // Регистр настройки порта 10 (подключен к оптическому сенсору)
+  Wire.write(0b01110001); // Диапазон входного напряжения 0 ... 10 В, встроенный ИОН, порт в режиме входа АЦП
+  Wire.write(0b11100000); // Порт не ассоциирован с другим портом, количество выборок АЦП - 128
+  Wire.endTransmission();
+  Wire.beginTransmission(sensor_addr);
+  Wire.write(0x2B);       // Регистр настройки порта 11 (подключен к оптическому сенсору)
+  Wire.write(0b01110001); // Диапазон входного напряжения 0 ... 10 В, встроенный ИОН, порт в режиме входа АЦП
+  Wire.write(0b11100000); // Порт не ассоциирован с другим портом, количество выборок АЦП - 128
+  Wire.endTransmission();
+  Wire.beginTransmission(sensor_addr);
+  Wire.write(0x2C);       // Регистр настройки порта 12 (подключен к оптическому сенсору)
+  Wire.write(0b01110001); // Диапазон входного напряжения 0 ... 10 В, встроенный ИОН, порт в режиме входа АЦП
+  Wire.write(0b11100000); // Порт не ассоциирован с другим портом, количество выборок АЦП - 128
+  Wire.endTransmission();
+  Wire.beginTransmission(sensor_addr);
+  Wire.write(0x2D);       // Регистр настройки порта 13 (подключен к оптическому сенсору)
+  Wire.write(0b01110001); // Диапазон входного напряжения 0 ... 10 В, встроенный ИОН, порт в режиме входа АЦП
+  Wire.write(0b11100000); // Порт не ассоциирован с другим портом, количество выборок АЦП - 128
+  Wire.endTransmission();
+  Wire.beginTransmission(sensor_addr);
+  Wire.write(0x2E);       // Регистр настройки порта 14 (подключен к оптическому сенсору)
+  Wire.write(0b01110001); // Диапазон входного напряжения 0 ... 10 В, встроенный ИОН, порт в режиме входа АЦП
+  Wire.write(0b11100000); // Порт не ассоциирован с другим портом, количество выборок АЦП - 128
+  Wire.endTransmission();
+  Wire.beginTransmission(sensor_addr);
+  Wire.write(0x2F);       // Регистр настройки порта 15 (подключен к оптическому сенсору)
+  Wire.write(0b01110001); // Диапазон входного напряжения 0 ... 10 В, встроенный ИОН, порт в режиме входа АЦП
+  Wire.write(0b11100000); // Порт не ассоциирован с другим портом, количество выборок АЦП - 128
+  Wire.endTransmission();
+  Wire.beginTransmission(sensor_addr);
+  Wire.write(0x30);       // Регистр настройки порта 16 (подключен к оптическому сенсору)
+  Wire.write(0b01110001); // Диапазон входного напряжения 0 ... 10 В, встроенный ИОН, порт в режиме входа АЦП
+  Wire.write(0b11100000); // Порт не ассоциирован с другим портом, количество выборок АЦП - 128
+  Wire.endTransmission();
+  Wire.beginTransmission(sensor_addr);
+  Wire.write(0x31);       // Регистр настройки порта 17 (подключен к оптическому сенсору)
+  Wire.write(0b01110001); // Диапазон входного напряжения 0 ... 10 В, встроенный ИОН, порт в режиме входа АЦП
+  Wire.write(0b11100000); // Порт не ассоциирован с другим портом, количество выборок АЦП - 128
+  Wire.endTransmission();
+  Wire.beginTransmission(sensor_addr);
+  Wire.write(0x32);       // Регистр настройки порта 18 (подключен к оптическому сенсору)
+  Wire.write(0b01111001); // Диапазон входного напряжения 0 ... 10 В, встроенный ИОН, порт в режиме входа АЦП
+  Wire.write(0b11100000); // Порт не ассоциирован с другим портом, количество выборок АЦП - 128
+  Wire.endTransmission();
+  delay(1000);
+  // Отладка регистров
+}
+ 
+void poll_sensor() {
+  int adc_sensor_data[38] = {0};
+  Wire.beginTransmission(sensor_addr);
+  Wire.write(0x40); // Регистр данных АЦП
+  Wire.endTransmission();
+  Wire.requestFrom(sensor_addr, 10);
+  if (Wire.available() == 10)
+  {
+    adc_sensor_data[0] = Wire.read(); // ADC00
+    adc_sensor_data[1] = Wire.read();
+    adc_sensor_data[2] = Wire.read(); // ADC01
+    adc_sensor_data[3] = Wire.read();
+    adc_sensor_data[4] = Wire.read(); // ADC02
+    adc_sensor_data[5] = Wire.read();
+    adc_sensor_data[6] = Wire.read(); // ADC03
+    adc_sensor_data[7] = Wire.read();
+    adc_sensor_data[8] = Wire.read(); // ADC04
+    adc_sensor_data[9] = Wire.read();
+  }
+  Wire.beginTransmission(sensor_addr);
+  Wire.write(0x45); // Регистр данных АЦП
+  Wire.endTransmission();
+  Wire.requestFrom(sensor_addr, 10);
+  if (Wire.available() == 10)
+  {
+    adc_sensor_data[10] = Wire.read(); // ADC05
+    adc_sensor_data[11] = Wire.read();
+    adc_sensor_data[12] = Wire.read(); // ADC06
+    adc_sensor_data[13] = Wire.read();
+    adc_sensor_data[14] = Wire.read(); // ADC07
+    adc_sensor_data[15] = Wire.read();
+    adc_sensor_data[16] = Wire.read(); // ADC08
+    adc_sensor_data[17] = Wire.read();
+    adc_sensor_data[18] = Wire.read(); // ADC09
+    adc_sensor_data[19] = Wire.read();
+  }
+  Wire.beginTransmission(sensor_addr);
+  Wire.write(0x4A); // Регистр данных АЦП
+  Wire.endTransmission();
+  Wire.requestFrom(sensor_addr, 10);
+  if (Wire.available() == 10)
+  {
+    adc_sensor_data[20] = Wire.read(); // ADC10
+    adc_sensor_data[21] = Wire.read();
+    adc_sensor_data[22] = Wire.read(); // ADC11
+    adc_sensor_data[23] = Wire.read();
+    adc_sensor_data[24] = Wire.read(); // ADC12
+    adc_sensor_data[25] = Wire.read();
+    adc_sensor_data[26] = Wire.read(); // ADC13
+    adc_sensor_data[27] = Wire.read();
+    adc_sensor_data[28] = Wire.read(); // ADC14
+    adc_sensor_data[29] = Wire.read();
+  }
+  Wire.beginTransmission(sensor_addr);
+  Wire.write(0x4F); // Регистр данных АЦП
+  Wire.endTransmission();
+  Wire.requestFrom(sensor_addr, 8);
+  if (Wire.available() == 8)
+  {
+    adc_sensor_data[30] = Wire.read(); // ADC15
+    adc_sensor_data[31] = Wire.read();
+    adc_sensor_data[32] = Wire.read(); // ADC16
+    adc_sensor_data[33] = Wire.read();
+    adc_sensor_data[34] = Wire.read(); // ADC17
+    adc_sensor_data[35] = Wire.read();
+    adc_sensor_data[36] = Wire.read(); // ADC18
+    adc_sensor_data[37] = Wire.read();
+  }
+  p00 = adc_sensor_data[36] * 256 + adc_sensor_data[37];
+  p01 = adc_sensor_data[34] * 256 + adc_sensor_data[35];
+  p02 = adc_sensor_data[32] * 256 + adc_sensor_data[33];
+  p03 = adc_sensor_data[30] * 256 + adc_sensor_data[31];
+  p04 = adc_sensor_data[28] * 256 + adc_sensor_data[29];
+  p05 = adc_sensor_data[26] * 256 + adc_sensor_data[27];
+  p06 = adc_sensor_data[24] * 256 + adc_sensor_data[25];
+  p07 = adc_sensor_data[22] * 256 + adc_sensor_data[23];
+  p08 = adc_sensor_data[20] * 256 + adc_sensor_data[21];
+  p09 = adc_sensor_data[18] * 256 + adc_sensor_data[19];
+  p10 = adc_sensor_data[16] * 256 + adc_sensor_data[17];
+  p11 = adc_sensor_data[14] * 256 + adc_sensor_data[15];
+  p12 = adc_sensor_data[12] * 256 + adc_sensor_data[13];
+  p13 = adc_sensor_data[10] * 256 + adc_sensor_data[11];
+  p14 = adc_sensor_data[8] * 256 + adc_sensor_data[9];
+  p15 = adc_sensor_data[6] * 256 + adc_sensor_data[7];
+  p16 = adc_sensor_data[4] * 256 + adc_sensor_data[5];
+  p17 = adc_sensor_data[2] * 256 + adc_sensor_data[3];
+  p18 = adc_sensor_data[0] * 256 + adc_sensor_data[1];
+}
+ 
+// Мощность мотора "A" от -100% до +100% (от знака зависит направление вращения)
+void motorA_setpower(float pwr, bool invert) {
+  invert = !invert;
+  // Проверка, инвертирован ли мотор
+  if (invert)
+  {
+    pwr = -pwr;
+  }
+  // Проверка диапазонов
+  if (pwr < -100)
+  {
+    pwr = -100;
+  }
+  if (pwr > 100)
+  {
+    pwr = 100;
+  }
+  int pwmvalue = fabs(pwr) * 40.95;
+  if (pwr < 0)
+  {
+    pwm.setPWM(10, 0, 4096);
+    pwm.setPWM(11, 0, pwmvalue);
+  }
+  else
+  {
+    pwm.setPWM(11, 0, 4096);
+    pwm.setPWM(10, 0, pwmvalue);
+  }
+}
+ 
+// Мощность мотора "B" от -100% до +100% (от знака зависит направление вращения)
+void motorB_setpower(float pwr, bool invert) {
+  // Проверка, инвертирован ли мотор
+  if (invert)
+  {
+    pwr = -pwr;
+  }
+  // Проверка диапазонов
+  if (pwr < -100)
+  {
+    pwr = -100;
+  }
+  if (pwr > 100)
+  {
+    pwr = 100;
+  }
+  int pwmvalue = fabs(pwr) * 40.95;
+  if (pwr < 0)
+  {
+    pwm.setPWM(8, 0, 4096);
+    pwm.setPWM(9, 0, pwmvalue);
+  }
+  else
+  {
+    pwm.setPWM(9, 0, 4096);
+    pwm.setPWM(8, 0, pwmvalue);
+  }
+}
+ 
+void serial_sensor(){
+  poll_sensor();
+  // Вывод измеренных значений в терминал
+  Serial.print(p00);
+  Serial.print(" ");
+  Serial.print(p01);
+  Serial.print(" ");
+  Serial.print(p02);
+  Serial.print(" ");
+  Serial.print(p03);
+  Serial.print(" ");
+  Serial.print(p04);
+  Serial.print(" ");
+  Serial.print(p05);
+  Serial.print(" ");
+  Serial.print(p06);
+  Serial.print(" ");
+  Serial.print(p07);
+  Serial.print(" ");
+  Serial.print(p08);
+  Serial.print(" ");
+  Serial.print(p09);
+  Serial.print(" ");
+  Serial.print(p10);
+  Serial.print(" ");
+  Serial.print(p11);
+  Serial.print(" ");
+  Serial.print(p12);
+  Serial.print(" ");
+  Serial.print(p13);
+  Serial.print(" ");
+  Serial.print(p14);
+  Serial.print(" ");
+  Serial.print(p15);
+  Serial.print(" ");
+  Serial.print(p16);
+  Serial.print(" ");
+  Serial.print(p17);
+  Serial.print(" ");
+  Serial.print(p18);
+  Serial.println(" ");
+}
+// Функция установки нужного выхода I2C
+bool setBusChannel(uint8_t i2c_channel) {
+  if (i2c_channel >= MAX_CHANNEL)
+  {
+    return false;
+  }
+  else
+  {
+    Wire.beginTransmission(I2C_HUB_ADDR);
+    Wire.write(i2c_channel | EN_MASK);
+    Wire.endTransmission();
+    return true;
+  }
+}
+
+int straightSilentLine() {
+  serial_sensor();
+  int sensor_value[17] {p01, p02, p03, p04, p05, p06, p07, p08, p09, p10, p11, p12, p13, p14, p15, p16, p17}; 
+  int count = 0;
+  for (int i = 1; i<17; i++){
+    if (sensor_value[i] >= 1385){
+      count++;
+    }
+  }
+  if (count >= 9){
+    Serial.println("Black is everywhere");
+    return 2;
+  } else if (((p07 >= 1400) && (p08 >= 1300) && (p09 >= 1300)) || ((p08 >= 1300) && (p09 >= 1300) && (p10 >= 1300)) || ((p09 >= 1300) && (p10 >= 1300) && (p11 >= 1300))){
+    return 1;
+  } else if (((p06 >= 1300) && (p07 >= 1300) && (p08 >= 1300)) || ((p05 >= 1300) && (p06 >= 1300) && (p07 >= 1300)) || ((p04 >= 1300) && (p05 >= 1300) && (p06 >= 1300))){
+    Serial.println("NEED TO THE LEFT");  
+    return 1;    
+  } else if (((p10 >= 1300) && (p11 >= 1300) && (p12 >= 1300)) || ((p11 >= 1300) && (p12 >= 1300) && (p13 >= 1300))){
+    Serial.println("NEED TO THE RIGHT");
+    return 1;
+  } else {
+    Serial.println("Line has been lost");
+    return 0;
+  }  
+}
+
+int straightLine(boolean direct) {
+  serial_sensor();
+  int sensor_value[17] {p01, p02, p03, p04, p05, p06, p07, p08, p09, p10, p11, p12, p13, p14, p15, p16, p17}; 
+  int count = 0;
+  for (int i = 1; i<17; i++){
+    if (sensor_value[i] >= 1385){
+      count++;
+    }
+  }
+  if (count >= 9){
+    motorA_setpower(15*2, direct);
+    motorB_setpower(15*2, direct);
+    Serial.println("Black is everywhere");
+    return 2;
+  } else if (((p07 >= 1400) && (p08 >= 1300) && (p09 >= 1300)) || ((p08 >= 1300) && (p09 >= 1300) && (p10 >= 1300)) || ((p09 >= 1300) && (p10 >= 1300) && (p11 >= 1300))){
+    motorA_setpower(15*2, true);
+    motorB_setpower(15*2, true);
+    return 1;
+  } else if (((p06 >= 1300) && (p07 >= 1300) && (p08 >= 1300)) || ((p05 >= 1300) && (p06 >= 1300) && (p07 >= 1300)) || ((p04 >= 1300) && (p05 >= 1300) && (p06 >= 1300))){
+    motorA_setpower(30, true);
+    motorB_setpower(10, true);
+    Serial.println("NEED TO THE LEFT");  
+    return 1;    
+  } else if (((p10 >= 1300) && (p11 >= 1300) && (p12 >= 1300)) || ((p11 >= 1300) && (p12 >= 1300) && (p13 >= 1300))){
+    motorA_setpower(3*2, true);
+    motorB_setpower(11*2, true);
+    Serial.println("NEED TO THE RIGHT");
+    return 1;
+  } else {
+    motorA_setpower(0, true);
+    motorB_setpower(0, true);
+    Serial.println("Line has been lost");
+    return 0;
+  }  
+}
+
+void color() {  // в пространстве HSL
+  uint16_t red_data   = 0;
+  uint16_t green_data = 0;
+  uint16_t blue_data  = 0;
+  uint16_t clear_data = 0;
+  uint16_t prox_data  = 0;
+  int M = 0;
+  int m = 0;
+  // float d = 0.0;
+  // static float H = 0.0;
+  // static float S = 0.0;
+  while (!apds9960.colorDataReady()) {
+    delay(5);
+  }
+  apds9960.getColorData(&red_data, &green_data, &blue_data, &clear_data);
+  // Serial.println("RED   = " + String(red_data));
+  // Serial.println("GREEN = " + String(green_data));
+  // Serial.println("BLUE  = " + String(blue_data));
+  RGB.r = red_data;
+  RGB.g = green_data;
+  RGB.b = blue_data;
+
+  //return String(red_data) + "." + String(green_data) + "." + String(blue_data);
+  //Serial.println("CLEAR = " + String(clear_data));
+  
+  //////////////////////////////////////////////////////
+  // if(red_data >= green_data && red_data >= blue_data) {
+  //   M = red_data;
+  // } else if(blue_data >= green_data && blue_data >= red_data) {
+  //   M = blue_data;
+  // } else {
+  //   M = green_data;
+  // }
+  // if(red_data <= green_data && red_data <= blue_data) {
+  //   m = red_data;
+  // } else if(blue_data <= green_data && blue_data <= red_data) {
+  //   m = blue_data;
+  // } else {
+  //   m = green_data;
+  // }
+  // static float L = (M + m) / 510;
+  // if(L > 0) {
+  //   S = d / (1 - abs(2 * L - 1));
+  // } else {
+  //   S = 0;
+  // }
+  // if(green_data >= blue_data) {
+  //   H = 1 / cos((red_data - 0.5 * green_data - 0.5 * blue_data) / (sqrt(pow(red_data, 2) + pow(green_data, 2) + pow(blue_data, 2) - red_data * green_data - red_data * blue_data - green_data * blue_data)));
+  // } else {
+  //   H = 360 - (1 / cos((red_data - 0.5 * green_data - 0.5 * blue_data) / (sqrt(pow(red_data, 2) + pow(green_data, 2) + pow(blue_data, 2) - red_data * green_data - red_data * blue_data - green_data * blue_data))));
+  // }
+  // ///////////////////////////////////////////////////////////////////////
+  // static float tmp[3] {H, S, L};
+  // return tmp;
+}
+
+void stop(){
+  motorA_setpower(10, false);
+  motorB_setpower(10, false);
+  delay(20);
+  motorA_setpower(0, false);
+  motorB_setpower(0, false);   
+}
+
+void turnIn(){  // ОТКАЛИБРОВАТЬ 
+  motorA_setpower(100, true);
+  motorB_setpower(15, true);
+  Serial.println("TURNING IN");
+}
+
+void turnOut(){  // ОТКАЛИБРОВАТЬ
+  motorA_setpower(25, false);
+  motorB_setpower(3, false);  
+}
+
+
+int garageIn() {  // механика въезда в гараж
+  if (((straightSilentLine() == 1) && !hasTurnedIn) || ((straightSilentLine() == 0) && !isOnLineAgain) || isOrange){
+    if (!isOnLineAgain){
+      turnIn();
+    }
+    if (straightLine(1) == 0){
+      hasTurnedIn = true;
+    }
+    return 0;
+  } else if (hasTurnedIn && (straightLine(1) == 1)){
+    isOnLineAgain = true;
+    return 0;
+  } else if (straightLine(1) == 0 && isOnLineAgain == true){
+    hasTurnedIn = false;
+    isOnLineAgain = false;
+    motorA_setpower(0, true);
+    motorB_setpower(0, true);
+    return 1;
+  }
+}
+
+
+int garageOut(){
+  if (!wasOnLine && straightSilentLine() == 0){
+    motorA_setpower(8*2, 0);
+    motorB_setpower(8*2, 0);
+    Serial.print("00000000000000000000000000000000000000000000000000000");
+    return 0;
+  } else if (straightSilentLine() && previousSilentLine){
+    wasOnLine = true;
+    Serial.print("11111111111111111111111111111111111111111111111111111");
+    return 0;
+    
+  } else if (straightSilentLine() == 0 || wasOnLine) {
+    if (wasOnLine && straightSilentLine() == 0){
+      previousSilentLine = 0;
+    }
+    if (straightSilentLine() == 1){
+      wasOnLine = 0;
+    }
+    turnOut();
+    Serial.print("222222222222222222222222222222222222222222222222222222");
+    return 0;
+  } else if (straightSilentLine() == 1){
+    motorA_setpower(10, true);
+    motorB_setpower(10, true);
+    delay(20);
+    Serial.print("3333333333333333333333333333333333333333333333333333333");
+    return 1;
+  }
+}
+
+// int garageOut(){  // механика выезда из гаража
+//   if (straightLine(0) == 0){
+//     turnOut();
+//     hasTurnedOut = true;
+//     return 0;
+//   } else if (!hasTurnedOut){
+//     straightLine(0);
+//     return 0;
+//   } else {
+//     hasTurnedOut = false;
+//     motorA_setpower(0, true);
+//     motorB_setpower(0, true);
+//     return 1;
+//   }
+// }
+
+
+
+void colorSilentInspection (float rb, int r, int b){
+  if (rb >= 1.3){  // для красного
+    isRed = true;   
+    isOrange = false;   
+  } else if (((r >= WHITE_R) || !((r < WHITE_R) && (r >= ORANGE_R))) || (b > WHITE_B)){  // по дефолту
+    isRed = false;
+    isOrange = false;
+  } else {  // для оранжевого
+    isOrange = true;        
+    isRed = false;
+  } 
+}
+
+void colorInspection(float rb, int r, int b){  // ничего не менял, можно вставлять обратно в луп
+  if (rb >= 1.3){  // для красного
+    if (needToStop){
+      motorA_setpower(10, false);
+      motorB_setpower(10, false);
+      delay(20);
+      needToStop = false;  
+      isRed = true;   
+      isOrange = false;   
+    }
+      motorA_setpower(0, true);
+      motorB_setpower(0, true);
+      // СООБЩЕНИЕ НА СЕРВЕР ЧТО СТОИТ У СБОРА АНАЛИЗОВ
+  } else if (((r >= WHITE_R) || !((r < WHITE_R) && (r >= ORANGE_R))) || (b > WHITE_B)){  // по дефолту
+    straightLine(1);
+    needToStop = true;
+  } else {  // для оранжевого
+    if (needToStop){
+      motorA_setpower(10, false);
+      motorB_setpower(10, false);
+      delay(20);
+      needToStop = false;
+      isOrange = true;        
+      isRed = false;
+    }
+    motorA_setpower(0, true);
+    motorB_setpower(0, true);
+  }
+}
+
+boolean isOrangeFirstTime = true;
+boolean isTurning = false;
+int toLab(boolean isNeed){
+  if (isNeed){
+    color();
+    auto r = RGB.r;
+    auto g = RGB.g;
+    auto b = RGB.b;
+    float rb = float(r)/float(b);
+    colorSilentInspection(rb, r, b);
+    if (!isOrange && !isTurning){
+      straightLine(1);
+      return 0;
+    } else if (isOrangeFirstTime){  
+      stop();
+      delay(30);
+      isOrangeFirstTime = false;
+      return 0;
+    } else {
+      isTurning = true;
+      if (garageIn()){
+        isTurning = false;
+        isOrangeFirstTime = true;
+        return 1;
+      } else {
+        return 0;
+      }
+    }
+  }
+}
+
+int outLab(boolean needToGo){
+  if (needToGo){
+    color();
+    auto r = RGB.r;
+    auto g = RGB.g;
+    auto b = RGB.b;
+    float rb = float(r)/float(b);
+    colorSilentInspection(rb, r, b); 
+    if (!outOfGarage){
+      if (garageOut()){
+        outOfGarage = true;
+      }      
+      return 0;
+    } else {
+      if (isRed){
+        if (isRedFirstTime){
+          motorA_setpower(10, false);
+          motorB_setpower(10, false);
+          delay(35);
+          motorA_setpower(0, false);
+          motorB_setpower(0, false);
+          isRedFirstTime = false;
+        }
+        hasTurnedOut = false;
+        wasOnLine = false;
+        return 1; 
+      } else {
+        straightLine(1);
+        return 0;
+      }
+      return 0;
+    }
+  } else {
+    return 0;
+  }
+}
+
+void setup() {
+  RGB.r = 0;
+  RGB.g = 0;
+  RGB.b = 0;
+  Serial.begin(115200);
+  ///////////////////////////////////////
+  pwm.begin();
+  // Частота (Гц)
+  pwm.setPWMFreq(100);
+  // Все порты выключены
+  pwm.setPWM(8, 0, 4096);
+  pwm.setPWM(9, 0, 4096);
+  pwm.setPWM(10, 0, 4096);
+  pwm.setPWM(11, 0, 4096);
+  // motorA_setpower(10, true);
+  // motorB_setpower(10, true);
+  /////////////////////////////////////// 
+  // СВЕТОДОДИКИ
+  Wire.begin();
+  Wire.setClock(100000L);
+  delay(100);
+  init_sensor();
+  setBusChannel(0x69);
+  ///////////////////////////////////////
+  // ЦВЕТ
+  if (!apds9960.begin()) {
+    Serial.println("Failed to initialize color sensor!");
+  }
+  // Инициализация режимов работы датчика
+  apds9960.enableColor(true);
+  //apds9960.enableProximity(true);
+    // Добавляем номер этой платы в массив структур
+  data[NUM].num = NUM;
+
+  
+  // Инициируем WiFi
+  WiFi.begin(SSID, PASSWORD);
+  // Ждём подключения WiFi
+  Serial.print("Подключаем к WiFi");
+  while (WiFi.status() != WL_CONNECTED) {
+    Serial.print(".");
+    delay(100);
+  }
+  Serial.println();
+
+  // Записываем адрес текущей платы в элемент структуры
+  data[NUM].boardIP = WiFi.localIP();
+
+  // Инициируем mDNS с именем "esp32slave" + номер платы
+  if (!MDNS.begin(String(slave_host + NUM).c_str())) {
+    Serial.println("не получилось инициировать mDNS");
+  }
+
+  // Узнаём IP адрес платы с UDP сервером
+  IPAddress server = MDNS.queryHost(master_host);
+
+  // Если удалось подключиться по UDP
+  if (udp.connect(server, PORT)) {
+
+    Serial.println("UDP подключён");
+
+    // вызываем callback функцию при получении пакета
+    udp.onPacket(parsePacket);
+  }
+}
+
+boolean out = false;
+boolean f = true;
+
+void loop() {
+  if (millis() - 5 >= previous_millis){
+    // if (!out){
+    //   if (outLab(1)){
+    //     out = true;
+    //   }
+    // } else {
+    //   if (f){
+    //     f = false;
+    //     delay(15000);
+    //   }
+    //   toLab(1);
+    // }
+    toLab(1);
+    
+    //outLab(1);
+    // if (garageOut() || outOfGarage){
+    //   outOfGarage = true;
+    //   if (isRed){
+    //     stop();
+    //   } else {
+    //     straightLine(1);
+    //     outOfGarage = false;
+    //   }
+    // }
+    
+    // color();
+    // auto r = RGB.r;
+    // auto g = RGB.g;
+    // auto b = RGB.b;
+    // float rb = float(r)/float(b);
+    // colorSilentInspection(rb, r, b);
+    // if (!isOrange && !isTurning){
+    //   straightLine(1);
+    // } else if (isOrangeFirstTime){  
+    //   stop();
+    //   delay(30);
+    //   isOrangeFirstTime = false;
+    // } else {
+    //   isTurning = true;
+    //   garageIn();
+    // }
+
+  //   if(toLab(first)){
+  //     first = 0;
+  //     boolean hasTurnedOut = false;
+  //     boolean wasOnLine = false;
+  //     int previousSilentLine = 1;
+  //     boolean hasTurnedIn = false;
+  //     boolean isOnLineAgain = false;
+  //     boolean outOfGarage = false;
+  //     boolean isRedFirstTime = true;
+  //     data[NUM].dina_Base = true;
+  //   }
+
+  //   if(outLab(second)){
+  //     second = 0;
+  //     boolean hasTurnedOut = false;
+  //     boolean wasOnLine = false;
+  //     int previousSilentLine = 1;
+  //     boolean hasTurnedIn = false;
+  //     boolean isOnLineAgain = false;
+  //     boolean outOfGarage = false;
+  //     boolean isRedFirstTime = true;
+  //     data[NUM].dina_TS = true;
+  //   }
+
+  //data[NUM].dina_Base = 1;
+  previous_millis = millis();
+  // }
+  }
+  static unsigned long t_udp;
+  // if (millis() - t_udp >= 200){ 
+  //   udp.broadcastTo((uint8_t*)&data[NUM], sizeof(data[0]), PORT);
+  //   Serial.println(data[3].dina_St);
+  //   t_udp = millis();
+  // }
+}
